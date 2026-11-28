@@ -11,3 +11,5 @@ backups/
 *.log
 cookies.txt
 .DS_Store
+ca.pem
+*.pem
