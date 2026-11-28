@@ -140,7 +140,7 @@ export function parseAuditLogQuery(query) {
     errors.action = 'Invalid audit action.';
   }
 
-  if (entityType && !['account', 'employee'].includes(entityType)) {
+  if (entityType && !['account', 'employee', 'onboarding', 'attendance', 'leave', 'system'].includes(entityType)) {
     errors.entityType = 'Invalid entity type.';
   }
 

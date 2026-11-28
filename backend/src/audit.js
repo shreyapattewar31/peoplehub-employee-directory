@@ -5,6 +5,21 @@ export const AUDIT_ACTIONS = [
   'employee.created',
   'employee.updated',
   'employee.deleted',
+  'settings.updated',
+  'onboarding.form_link_saved',
+  'onboarding.submitted',
+  'onboarding.document_verified',
+  'onboarding.document_rejected',
+  'onboarding.approved',
+  'onboarding.rejected',
+  'attendance.punched_in',
+  'attendance.punched_out',
+  'leave.requested',
+  'leave.cancelled',
+  'leave.approved',
+  'leave.rejected',
+  'email.sent',
+  'data.exported',
 ];
 
 const EMPLOYEE_FIELD_LABELS = {
@@ -15,6 +30,7 @@ const EMPLOYEE_FIELD_LABELS = {
   designation: 'designation',
   salary: 'salary',
   joining_date: 'joining date',
+  photo_path: 'photo',
 };
 
 export async function recordAudit(database, {
@@ -45,10 +61,17 @@ export async function recordAudit(database, {
 }
 
 export async function auditedTransaction(database, user, audit, operation) {
-  const resolveAudit = (result) => ({
-    user: typeof user === 'function' ? user(result) : user,
-    ...(typeof audit === 'function' ? audit(result) : audit),
-  });
+  const resolveAudit = (result) => {
+    const entry = typeof audit === 'function' ? audit(result) : audit;
+    if (!entry) {
+      return null;
+    }
+
+    return {
+      user: typeof user === 'function' ? user(result) : user,
+      ...entry,
+    };
+  };
 
   if (typeof database.getConnection !== 'function') {
     const result = await operation(database);

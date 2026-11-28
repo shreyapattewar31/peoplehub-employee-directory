@@ -9,4 +9,13 @@ export const pool = mysql.createPool({
   namedPlaceholders: true,
   dateStrings: true,
   decimalNumbers: true,
+  timezone: 'Z',
+});
+
+pool.on('connection', (connection) => {
+  connection.query("SET time_zone = '+00:00'", (error) => {
+    if (error) {
+      console.error('Unable to set the database session time zone:', error.message);
+    }
+  });
 });

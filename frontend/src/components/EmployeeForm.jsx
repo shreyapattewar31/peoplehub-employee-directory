@@ -1,7 +1,10 @@
-import { useState } from 'react';
-import { ApiError, createEmployee, updateEmployee } from '../api.js';
+import { useEffect, useRef, useState } from 'react';
+import { ApiError, createEmployee, deleteEmployeePhoto, updateEmployee, uploadEmployeePhoto } from '../api.js';
+import { clearDraft, readDraft, writeDraft } from '../utils/drafts.js';
 import { getInitials } from '../utils/format.js';
+import { employeePhotoUrl } from '../utils/url.js';
 import { validateEmployee } from '../utils/validation.js';
+import TurnstileField from './TurnstileField.jsx';
 import Icon from './Icon.jsx';
 import Modal from './Modal.jsx';
 
@@ -35,8 +38,9 @@ function FormField({ name, label, labelHint, helper, error, children, fullWidth 
   );
 }
 
-export default function EmployeeForm({ employee, departments, onClose, onSaved }) {
-  const [values, setValues] = useState(() => employee
+export default function EmployeeForm({ employee, departments, onClose, onSaved, onNotify }) {
+  const draftKey = `employee.${employee?.id || 'new'}`;
+  const defaults = employee
     ? {
         name: employee.name || '',
         email: employee.email || '',
@@ -46,10 +50,20 @@ export default function EmployeeForm({ employee, departments, onClose, onSaved }
         salary: String(employee.salary ?? ''),
         joining_date: employee.joining_date || '',
       }
-    : EMPTY_EMPLOYEE);
+    : EMPTY_EMPLOYEE;
+  const [values, setValues] = useState(() => readDraft(draftKey, defaults));
   const [errors, setErrors] = useState({});
   const [submitError, setSubmitError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [photoUrl, setPhotoUrl] = useState(employee?.photo_url || '');
+  const [isPhotoSaving, setIsPhotoSaving] = useState(false);
+  const [photoError, setPhotoError] = useState('');
+  const turnstileRef = useRef(null);
+  const isBusy = isSaving || isPhotoSaving;
+
+  useEffect(() => {
+    writeDraft(draftKey, values);
+  }, [draftKey, values]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -71,9 +85,11 @@ export default function EmployeeForm({ employee, departments, onClose, onSaved }
 
     setIsSaving(true);
     setSubmitError('');
+    setErrors((current) => ({ ...current, captcha: '' }));
 
     const payload = {
       ...values,
+      ...(turnstileRef.current?.getValue() || {}),
       name: values.name.trim(),
       email: values.email.trim().toLowerCase(),
       phone: values.phone.trim(),
@@ -86,10 +102,12 @@ export default function EmployeeForm({ employee, departments, onClose, onSaved }
       const response = employee
         ? await updateEmployee(employee.id, payload)
         : await createEmployee(payload);
-      onSaved(response.data, employee ? 'edit' : 'create');
+      clearDraft(draftKey);
+      onSaved({ ...response.data, photo_url: photoUrl || null }, employee ? 'edit' : 'create');
     } catch (error) {
       if (error instanceof ApiError && Object.keys(error.errors).length > 0) {
         setErrors(error.errors);
+        turnstileRef.current?.refresh();
       }
       setSubmitError(error.message || 'The employee could not be saved.');
     } finally {
@@ -103,8 +121,52 @@ export default function EmployeeForm({ employee, departments, onClose, onSaved }
     value: values[name],
     onChange: handleChange,
     'aria-invalid': Boolean(errors[name]),
-    disabled: isSaving,
+    disabled: isBusy,
   });
+
+  const handlePhotoUpload = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !employee) return;
+
+    setPhotoError('');
+    if (file.size > 2 * 1024 * 1024) {
+      setPhotoError('Choose an image no larger than 2 MB.');
+      return;
+    }
+
+    setIsPhotoSaving(true);
+    try {
+      const response = await uploadEmployeePhoto(employee.id, file, turnstileRef.current?.getValue() || {});
+      setPhotoUrl(response.data.photo_url);
+      onNotify?.('success', 'Employee photo updated.');
+      turnstileRef.current?.refresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.errors.photo) {
+        setPhotoError(error.errors.photo);
+      }
+      setPhotoError((current) => current || error.message || 'The photo could not be uploaded.');
+      turnstileRef.current?.refresh();
+    } finally {
+      setIsPhotoSaving(false);
+    }
+  };
+
+  const handlePhotoDelete = async () => {
+    setIsPhotoSaving(true);
+    setPhotoError('');
+    try {
+      await deleteEmployeePhoto(employee.id, turnstileRef.current?.getValue() || {});
+      setPhotoUrl('');
+      onNotify?.('success', 'Employee photo removed.');
+      turnstileRef.current?.refresh();
+    } catch (error) {
+      setPhotoError(error.message || 'The photo could not be removed.');
+      turnstileRef.current?.refresh();
+    } finally {
+      setIsPhotoSaving(false);
+    }
+  };
 
   return (
     <Modal
@@ -118,12 +180,39 @@ export default function EmployeeForm({ employee, departments, onClose, onSaved }
     >
       <form onSubmit={handleSubmit} noValidate>
         <div className="modal-body employee-form-body">
-          {submitError && (
+          {(submitError || errors.form) && (
             <div className="alert alert-error form-alert" role="alert">
               <Icon name="alert" size={18} />
-              <span>{submitError}</span>
+              <span>{submitError || errors.form}</span>
             </div>
           )}
+
+          <div className="photo-upload-panel">
+            <span className={`avatar avatar-${employee?.id || 0}`} aria-hidden="true">
+              {photoUrl
+                ? <img src={employeePhotoUrl({ photo_url: photoUrl })} alt="" />
+                : getInitials(employee?.name || values.name)}
+            </span>
+            <div className="photo-upload-copy">
+              <strong>Employee photo</strong>
+              <p>JPEG, PNG, or WebP · maximum 2 MB · 128–4096 px on each side.</p>
+              {photoError && <p className="field-error" role="alert">{photoError}</p>}
+            </div>
+            {employee && (
+              <div className="photo-upload-actions">
+                <label className="button button-secondary button-small">
+                  <Icon name="image" size={15} />
+                  {isPhotoSaving ? 'Working…' : photoUrl ? 'Replace' : 'Upload'}
+                  <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handlePhotoUpload} disabled={isBusy} hidden />
+                </label>
+                {photoUrl && (
+                  <button type="button" className="button button-ghost button-small" onClick={handlePhotoDelete} disabled={isBusy}>
+                    <Icon name="trash" size={15} />Remove
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
 
           {employee && (
             <div className="edit-employee-summary">
@@ -292,13 +381,20 @@ export default function EmployeeForm({ employee, departments, onClose, onSaved }
               )}
             </FormField>
           </div>
+
+          <TurnstileField
+            ref={turnstileRef}
+            error={errors.captcha}
+            disabled={isBusy}
+            onErrorClear={() => setErrors((current) => ({ ...current, captcha: '' }))}
+          />
         </div>
 
         <footer className="modal-footer">
-          <button type="button" className="button button-secondary" onClick={onClose} disabled={isSaving}>
+          <button type="button" className="button button-secondary" onClick={onClose} disabled={isBusy}>
             Cancel
           </button>
-          <button type="submit" className="button button-primary" disabled={isSaving}>
+          <button type="submit" className="button button-primary" disabled={isBusy}>
             {isSaving ? <span className="spinner" aria-hidden="true" /> : <Icon name="check" size={18} />}
             {isSaving ? 'Saving…' : employee ? 'Save changes' : 'Save employee'}
           </button>

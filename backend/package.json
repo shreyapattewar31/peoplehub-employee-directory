@@ -7,16 +7,21 @@
     "dev": "node --watch server.js",
     "start": "node server.js",
     "db:setup": "node scripts/setupDatabase.js",
+    "db:migrate": "node scripts/migrateDatabase.js",
     "test": "node --test"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.11.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.7.5",
-    "mysql2": "^3.11.5"
+    "multer": "^2.5.0",
+    "mysql2": "^3.11.5",
+    "nodemailer": "^10.6.1",
+    "sharp": "^0.35.5"
   },
   "engines": {
     "node": ">=18.0.0"

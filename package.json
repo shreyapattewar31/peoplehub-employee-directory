@@ -12,6 +12,7 @@
     "dev:server": "npm --prefix backend run dev",
     "dev:client": "npm --prefix frontend run dev",
     "db:setup": "npm --prefix backend run db:setup",
+    "db:migrate": "npm --prefix backend run db:migrate",
     "build": "npm --prefix frontend run build",
     "start": "npm --prefix backend start",
     "test": "npm --prefix backend test"

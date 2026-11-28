@@ -8,8 +8,14 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
+      host: '0.0.0.0',
       port: 5173,
       strictPort: true,
+      allowedHosts: [
+        'customs-cricket-unaligned.ngrok-free.dev',
+        'cgplk-103-97-104-46.free.pinggy.net',
+        'smhft-103-97-104-46.run.pinggy-free.link',
+      ],
       proxy: {
         '/api': {
           target,

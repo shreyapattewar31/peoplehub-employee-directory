@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import { config, validateConfig } from '../src/config.js';
+import { runMigrations } from '../migrations/001_expandPeopleHub.js';
 
 try {
   validateConfig();
@@ -16,10 +17,7 @@ try {
     config.database.database,
   );
   const connection = await mysql.createConnection({
-    host: config.database.host,
-    port: config.database.port,
-    user: config.database.user,
-    password: config.database.password,
+    ...config.database,
     multipleStatements: true,
   });
 
@@ -39,6 +37,27 @@ try {
        AFTER password_hash`,
     );
   }
+
+  const columnUpgrades = [
+    ['employees', 'photo_path', "ADD COLUMN photo_path VARCHAR(255) NULL AFTER joining_date"],
+    ['employees', 'updated_at', 'ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at'],
+    ['users', 'updated_at', 'ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at'],
+  ];
+
+  for (const [table, column, definition] of columnUpgrades) {
+    const [columns] = await connection.query(
+      `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      [config.database.database, table, column],
+    );
+
+    if (columns.length === 0) {
+      await connection.query(`ALTER TABLE ${table} ${definition}`);
+    }
+  }
+
+  await runMigrations(connection, config.database.database);
 
   const [adminRows] = await connection.query(
     "SELECT id FROM users WHERE role = 'admin' LIMIT 1",

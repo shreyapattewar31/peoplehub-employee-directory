@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import { pool } from '../db.js';
 import { auditedTransaction } from '../audit.js';
 import { validateLogin, validateRegistration } from '../authValidation.js';
@@ -19,22 +18,29 @@ const asyncHandler = (handler) => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch(next);
 };
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 20,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  message: { error: 'Too many attempts. Please try again in 15 minutes.' },
-});
-
-export function createAuthRouter(database = pool, authMiddleware) {
+export function createAuthRouter(database = pool, authMiddleware, {
+  authLimiter = (req, res, next) => next(),
+  turnstileMiddleware = (req, res, next) => next(),
+} = {}) {
   const router = Router();
 
-  router.post('/register', authLimiter, asyncHandler(async (req, res) => {
+  router.post('/register', authLimiter, turnstileMiddleware, asyncHandler(async (req, res) => {
     const { errors, value } = validateRegistration(req.body);
 
     if (Object.keys(errors).length > 0) {
       return res.status(400).json({ error: 'Validation failed.', errors });
+    }
+
+    if (value.registrationSource === 'onboarding') {
+      return res.status(410).json({ error: 'Use the direct onboarding form to create an employee account.' });
+    }
+
+    const [accountRows] = await database.query('SELECT COUNT(*) AS total FROM users');
+    if (Number(accountRows[0].total) > 0) {
+      return res.status(403).json({
+        error: 'Employee accounts are created through the onboarding form and require administrator approval.',
+        code: 'ONBOARDING_REQUIRED',
+      });
     }
 
     const [existingUsers] = await database.query(
@@ -43,7 +49,10 @@ export function createAuthRouter(database = pool, authMiddleware) {
     );
 
     if (existingUsers.length > 0) {
-      return res.status(409).json({ error: 'An account with this email already exists.' });
+      return res.status(409).json({
+        error: 'An account with this email already exists.',
+        errors: { email: 'An account with this email already exists.' },
+      });
     }
 
     const passwordHash = await hashPassword(value.password);
@@ -57,7 +66,7 @@ export function createAuthRouter(database = pool, authMiddleware) {
           action: 'account.registered',
           entityType: 'account',
           entityId: result.user.id,
-          summary: `${result.user.name} registered as ${result.user.role === 'admin' ? 'administrator' : 'member'}.`,
+          summary: `${result.user.name} registered as ${result.user.role === 'admin' ? 'administrator' : 'employee'}.`,
           details: { role: result.user.role },
           ipAddress: req.ip,
         }),
@@ -76,21 +85,29 @@ export function createAuthRouter(database = pool, authMiddleware) {
             email: value.email,
             role,
             created_at: new Date(),
+            updated_at: new Date(),
           };
-          const token = await createSession(connection, user.id);
+          const token = value.registrationSource === 'onboarding'
+            ? null
+            : await createSession(connection, user.id);
 
           return { user, token };
         },
       );
 
       account = session.user;
-      res.cookie(SESSION_COOKIE_NAME, session.token, {
-        ...sessionCookieOptions,
-        maxAge: SESSION_MAX_AGE_MS,
-      });
+      if (session.token) {
+        res.cookie(SESSION_COOKIE_NAME, session.token, {
+          ...sessionCookieOptions,
+          maxAge: SESSION_MAX_AGE_MS,
+        });
+      }
     } catch (error) {
       if (error.code === 'ER_DUP_ENTRY') {
-        return res.status(409).json({ error: 'An account with this email already exists.' });
+        return res.status(409).json({
+          error: 'An account with this email already exists.',
+          errors: { email: 'An account with this email already exists.' },
+        });
       }
       throw error;
     }
@@ -98,7 +115,7 @@ export function createAuthRouter(database = pool, authMiddleware) {
     return res.status(201).json({ data: serializeUser(account) });
   }));
 
-  router.post('/login', authLimiter, asyncHandler(async (req, res) => {
+  router.post('/login', authLimiter, turnstileMiddleware, asyncHandler(async (req, res) => {
     const { errors, value } = validateLogin(req.body);
 
     if (Object.keys(errors).length > 0) {
@@ -106,13 +123,22 @@ export function createAuthRouter(database = pool, authMiddleware) {
     }
 
     const [users] = await database.query(
-      'SELECT id, name, email, password_hash, role, created_at FROM users WHERE email = ? LIMIT 1',
+      'SELECT id, name, email, password_hash, role, status, created_at, updated_at FROM users WHERE email = ? LIMIT 1',
       [value.email],
     );
     const user = users[0];
 
     if (!user || !(await verifyPassword(value.password, user.password_hash))) {
       return res.status(401).json({ error: 'Email or password is incorrect.' });
+    }
+
+    if (user.status !== 'active') {
+      return res.status(403).json({
+        error: user.status === 'pending'
+          ? 'Your account is awaiting administrator approval.'
+          : 'Your account has been blocked. Contact an administrator.',
+        code: user.status === 'pending' ? 'ACCOUNT_PENDING' : 'ACCOUNT_BLOCKED',
+      });
     }
 
     const token = await auditedTransaction(

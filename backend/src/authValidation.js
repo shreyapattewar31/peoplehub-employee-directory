@@ -18,6 +18,8 @@ export function validateRegistration(input) {
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   const email = normalizeEmail(input.email);
   const password = typeof input.password === 'string' ? input.password : '';
+  const registrationSource = input.registrationSource === 'onboarding' ? 'onboarding' : 'standard';
+  value.registrationSource = registrationSource;
 
   if (name.length < 2) {
     errors.name = 'Name must be at least 2 characters.';

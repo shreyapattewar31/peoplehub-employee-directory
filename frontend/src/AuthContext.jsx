@@ -51,7 +51,9 @@ export function AuthProvider({ children }) {
 
   const register = useCallback(async (account) => {
     const response = await registerAccount(account);
-    setUser(response.data);
+    if (account.registrationSource !== 'onboarding') {
+      setUser(response.data);
+    }
     setSessionError('');
     return response.data;
   }, []);

@@ -1,22 +1,28 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { deleteEmployee } from '../api.js';
 import { getInitials } from '../utils/format.js';
+import TurnstileField from './TurnstileField.jsx';
 import Icon from './Icon.jsx';
 import Modal from './Modal.jsx';
 
 export default function DeleteEmployeeModal({ employee, onClose, onDeleted }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState('');
+  const [captchaError, setCaptchaError] = useState('');
+  const turnstileRef = useRef(null);
 
   const handleDelete = async () => {
     setIsDeleting(true);
     setError('');
+    setCaptchaError('');
 
     try {
-      await deleteEmployee(employee.id);
+      await deleteEmployee(employee.id, turnstileRef.current?.getValue() || {});
       onDeleted(employee);
     } catch (deleteError) {
+      setCaptchaError(deleteError.errors?.captcha || '');
       setError(deleteError.message || 'The employee could not be deleted.');
+      turnstileRef.current?.refresh();
     } finally {
       setIsDeleting(false);
     }
@@ -59,6 +65,12 @@ export default function DeleteEmployeeModal({ employee, onClose, onDeleted }) {
           <Icon name="alert" size={18} />
           <p>This employee record will be permanently removed from the directory.</p>
         </div>
+        <TurnstileField
+          ref={turnstileRef}
+          error={captchaError}
+          disabled={isDeleting}
+          onErrorClear={() => setCaptchaError('')}
+        />
         {error && (
           <div className="alert alert-error delete-error" role="alert">
             <Icon name="alert" size={18} />

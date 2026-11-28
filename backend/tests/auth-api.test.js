@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { createApp } from '../src/app.js';
+import { createRateLimiters } from '../src/middleware/rateLimiters.js';
 import { hashPassword, SESSION_COOKIE_NAME } from '../src/auth.js';
 
 function createMockDatabase(results) {
@@ -29,7 +30,10 @@ function createMockDatabase(results) {
 }
 
 async function withServer(database, run) {
-  const server = createApp(database).listen(0);
+  const server = createApp(database, {
+    turnstileMiddleware: (req, res, next) => next(),
+    rateLimiters: createRateLimiters({ enabled: false }),
+  }).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
 
   try {
@@ -79,6 +83,7 @@ test('registration validates input before querying the database', async () => {
 
 test('registration hashes the password and creates an HttpOnly session', async () => {
   const database = createMockDatabase([
+    [[{ total: 0 }]],
     [[]],
     [[{ total: 0 }]],
     [{ insertId: 4 }],
@@ -99,7 +104,7 @@ test('registration hashes the password and creates an HttpOnly session', async (
     });
     const body = await response.json();
     const setCookie = response.headers.get('set-cookie');
-    const storedHash = database.calls[2].params[2];
+    const storedHash = database.calls[3].params[2];
 
     assert.equal(response.status, 201);
     assert.equal(body.data.email, 'avery@example.com');
@@ -108,21 +113,15 @@ test('registration hashes the password and creates an HttpOnly session', async (
     assert.match(setCookie, /SameSite=Lax/i);
     assert.notEqual(storedHash, 'Directory123');
     assert.equal(await bcrypt.compare('Directory123', storedHash), true);
-    assert.match(database.calls[3].sql, /INSERT INTO sessions/);
-    assert.match(database.calls[5].sql, /INSERT INTO audit_logs/);
-    assert.equal(database.calls[5].params[3], 'account.registered');
+    assert.match(database.calls[4].sql, /INSERT INTO sessions/);
+    assert.match(database.calls[5].sql, /DELETE FROM sessions/);
+    assert.match(database.calls[6].sql, /INSERT INTO audit_logs/);
+    assert.equal(database.calls[6].params[3], 'account.registered');
   });
 });
 
-test('later registrations receive read-only member access', async () => {
-  const database = createMockDatabase([
-    [[]],
-    [[{ total: 1 }]],
-    [{ insertId: 5 }],
-    [{}],
-    [{ affectedRows: 0 }],
-    [{}],
-  ]);
+test('later standard registrations are redirected to approved onboarding', async () => {
+  const database = createMockDatabase([[[{ total: 1 }]]]);
 
   await withServer(database, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
@@ -136,14 +135,37 @@ test('later registrations receive read-only member access', async () => {
     });
     const body = await response.json();
 
-    assert.equal(response.status, 201);
-    assert.equal(body.data.role, 'user');
-    assert.equal(database.calls[2].params[3], 'user');
+    assert.equal(response.status, 403);
+    assert.equal(body.code, 'ONBOARDING_REQUIRED');
+    assert.equal(database.calls.length, 1);
   });
 });
 
-test('registration rejects an existing email', async () => {
-  const database = createMockDatabase([[[{ id: 1 }]]]);
+test('legacy onboarding registration is disabled in favor of the direct application flow', async () => {
+  const database = createMockDatabase([]);
+
+  await withServer(database, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Jordan Lee',
+        email: 'jordan@example.com',
+        password: 'Directory123',
+        registrationSource: 'onboarding',
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 410);
+    assert.match(body.error, /direct onboarding form/i);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(database.calls.length, 0);
+  });
+});
+
+test('registration does not expose whether an existing email is registered', async () => {
+  const database = createMockDatabase([[[{ total: 1 }]]]);
 
   await withServer(database, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
@@ -156,8 +178,8 @@ test('registration rejects an existing email', async () => {
       }),
     });
 
-    assert.equal(response.status, 409);
-    assert.match((await response.json()).error, /already exists/);
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, 'ONBOARDING_REQUIRED');
     assert.equal(database.calls.length, 1);
   });
 });
@@ -171,6 +193,7 @@ test('login creates a session for valid credentials', async () => {
       email: 'avery@example.com',
       password_hash: passwordHash,
       role: 'admin',
+      status: 'active',
       created_at: '2026-11-26 10:00:00',
     }]],
     [{}],
@@ -193,6 +216,33 @@ test('login creates a session for valid credentials', async () => {
     assert.ok(sessionCookie(response)?.startsWith(`${SESSION_COOKIE_NAME}=`));
     assert.match(database.calls[3].sql, /INSERT INTO audit_logs/);
     assert.equal(database.calls[3].params[3], 'auth.login');
+  });
+});
+
+test('login blocks pending accounts until administrator approval', async () => {
+  const passwordHash = await hashPassword('Directory123');
+  const database = createMockDatabase([[[{
+    id: 5,
+    name: 'Jordan Lee',
+    email: 'jordan@example.com',
+    password_hash: passwordHash,
+    role: 'user',
+    status: 'pending',
+    created_at: '2026-11-27 10:00:00',
+  }]]]);
+
+  await withServer(database, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'jordan@example.com', password: 'Directory123' }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 403);
+    assert.equal(body.code, 'ACCOUNT_PENDING');
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(database.calls.length, 1);
   });
 });
 
@@ -232,6 +282,7 @@ test('current user is returned for a valid session cookie', async () => {
       name: 'Avery Morgan',
       email: 'avery@example.com',
       role: 'admin',
+      status: 'active',
       created_at: '2026-11-26 10:00:00',
       expires_at: '2026-12-03 10:00:00',
     }]],
@@ -257,6 +308,7 @@ test('logout deletes the session, records activity, and clears the cookie', asyn
       name: 'Avery Morgan',
       email: 'avery@example.com',
       role: 'admin',
+      status: 'active',
       created_at: '2026-11-26 10:00:00',
       expires_at: '2026-12-03 10:00:00',
     }]],

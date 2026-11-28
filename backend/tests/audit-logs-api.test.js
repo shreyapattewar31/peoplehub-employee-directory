@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
+import { createRateLimiters } from '../src/middleware/rateLimiters.js';
 
 function createMockDatabase(results) {
   const calls = [];
@@ -30,7 +31,11 @@ async function withServer(database, run, user = null) {
     req.user = user;
     return next();
   };
-  const server = createApp(database, { authMiddleware }).listen(0);
+  const server = createApp(database, {
+    authMiddleware,
+    turnstileMiddleware: (req, res, next) => next(),
+    rateLimiters: createRateLimiters({ enabled: false }),
+  }).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
 
   try {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
+import { createRateLimiters } from '../src/middleware/rateLimiters.js';
 
 const employee = {
   id: 7,
@@ -47,7 +48,11 @@ async function withServer(database, run, user = {
     req.user = user;
     next();
   };
-  const server = createApp(database, { authMiddleware }).listen(0);
+  const server = createApp(database, {
+    authMiddleware,
+    turnstileMiddleware: (req, res, next) => next(),
+    rateLimiters: createRateLimiters({ enabled: false }),
+  }).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
 
   try {
@@ -193,10 +198,11 @@ test('PUT updates an existing employee', async () => {
   });
 });
 
-test('DELETE returns 204, removes the employee, and records an audit event', async () => {
+test('DELETE returns 204, retires the employee, and records an audit event', async () => {
   const database = createMockDatabase([
     [[employee]],
     [{ affectedRows: 1 }],
+    [{ affectedRows: 0 }],
     [{}],
   ]);
 
@@ -205,10 +211,12 @@ test('DELETE returns 204, removes the employee, and records an audit event', asy
 
     assert.equal(response.status, 204);
     assert.equal(await response.text(), '');
+    assert.match(database.calls[1].sql, /UPDATE employees[\s\S]*SET deleted_at = UTC_TIMESTAMP/);
     assert.deepEqual(database.calls[1].params, [7]);
-    assert.match(database.calls[2].sql, /INSERT INTO audit_logs/);
-    assert.equal(database.calls[2].params[3], 'employee.deleted');
-    assert.match(database.calls[2].params[6], /Avery Morgan/);
+    assert.match(database.calls[2].sql, /UPDATE users SET status = 'blocked'/);
+    assert.match(database.calls[3].sql, /INSERT INTO audit_logs/);
+    assert.equal(database.calls[3].params[3], 'employee.deleted');
+    assert.match(database.calls[3].params[6], /Avery Morgan/);
   });
 });
 
@@ -235,7 +243,7 @@ test('PATCH records changed fields in the audit log', async () => {
   });
 });
 
-test('non-admin accounts cannot create, update, or delete employees', async () => {
+test('non-admin accounts cannot access employee data', async () => {
   const database = createMockDatabase([]);
   const member = { id: 2, name: 'Team Member', email: 'member@example.com', role: 'user' };
   const payload = {
@@ -248,6 +256,9 @@ test('non-admin accounts cannot create, update, or delete employees', async () =
     joining_date: employee.joining_date,
   };
   const requests = [
+    { method: 'GET', path: '/api/employees' },
+    { method: 'GET', path: '/api/employees/departments' },
+    { method: 'GET', path: '/api/employees/7' },
     { method: 'POST', path: '/api/employees', body: payload },
     { method: 'PUT', path: '/api/employees/7', body: payload },
     { method: 'PATCH', path: '/api/employees/7', body: { designation: 'Lead' } },

@@ -1,4 +1,6 @@
+import { readFile } from 'node:fs/promises';
 import { Router } from 'express';
+import multer from 'multer';
 import { pool } from '../db.js';
 import {
   auditedTransaction,
@@ -7,20 +9,35 @@ import {
 } from '../audit.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { parseListQuery, validateEmployee, validateId } from '../validation.js';
+import { EMPLOYEE_COLUMNS, serializeEmployee } from '../utils/employees.js';
+import {
+  deleteEmployeePhoto,
+  getEmployeePhotoPath,
+  getEmployeePhotoUrl,
+  IMAGE_POLICY,
+  saveEmployeePhoto,
+} from '../services/employeePhotos.js';
+import { recordSystemLog } from '../logger.js';
 
 const asyncHandler = (handler) => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch(next);
 };
 
-const EMPLOYEE_COLUMNS =
-  'id, name, email, phone, department, designation, salary, joining_date, created_at';
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: IMAGE_POLICY.maxBytes, files: 1 },
+});
 
-export function createEmployeesRouter(database = pool) {
+export function createEmployeesRouter(database = pool, {
+  mutationLimiter = (req, res, next) => next(),
+  uploadLimiter = (req, res, next) => next(),
+  turnstileMiddleware = (req, res, next) => next(),
+} = {}) {
   const router = Router();
 
   async function findEmployee(id, connection = database) {
     const [rows] = await connection.query(
-      `SELECT ${EMPLOYEE_COLUMNS} FROM employees WHERE id = ?`,
+      `SELECT ${EMPLOYEE_COLUMNS} FROM employees WHERE id = ? AND deleted_at IS NULL`,
       [id],
     );
     return rows[0] ?? null;
@@ -28,7 +45,7 @@ export function createEmployeesRouter(database = pool) {
 
   router.get('/departments', asyncHandler(async (req, res) => {
     const [rows] = await database.query(
-      'SELECT department FROM employees GROUP BY department ORDER BY department ASC',
+      'SELECT department FROM employees WHERE deleted_at IS NULL GROUP BY department ORDER BY department ASC',
     );
     res.json({ data: rows.map((row) => row.department) });
   }));
@@ -48,7 +65,7 @@ export function createEmployeesRouter(database = pool) {
       sortBy,
       sortOrder,
     } = value;
-    const conditions = [];
+    const conditions = ['deleted_at IS NULL'];
     const params = [];
 
     if (search) {
@@ -83,7 +100,7 @@ export function createEmployeesRouter(database = pool) {
     );
 
     res.json({
-      data: rows,
+      data: rows.map(serializeEmployee),
       pagination: {
         page,
         limit,
@@ -106,10 +123,10 @@ export function createEmployeesRouter(database = pool) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
 
-    res.json({ data: employee });
+    res.json({ data: serializeEmployee(employee) });
   }));
 
-  router.post('/', requireAdmin, asyncHandler(async (req, res) => {
+  router.post('/', mutationLimiter, turnstileMiddleware, requireAdmin, asyncHandler(async (req, res) => {
     const { errors, value } = validateEmployee(req.body);
 
     if (Object.keys(errors).length > 0) {
@@ -149,10 +166,10 @@ export function createEmployeesRouter(database = pool) {
 
     res.status(201)
       .location(`/api/employees/${employee.id}`)
-      .json({ data: employee });
+      .json({ data: serializeEmployee(employee) });
   }));
 
-  router.put('/:id', requireAdmin, asyncHandler(async (req, res) => {
+  router.put('/:id', mutationLimiter, turnstileMiddleware, requireAdmin, asyncHandler(async (req, res) => {
     const id = validateId(req.params.id);
 
     if (!id) {
@@ -215,10 +232,10 @@ export function createEmployeesRouter(database = pool) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
 
-    res.json({ data: employee });
+    res.json({ data: serializeEmployee(employee) });
   }));
 
-  router.patch('/:id', requireAdmin, asyncHandler(async (req, res) => {
+  router.patch('/:id', mutationLimiter, turnstileMiddleware, requireAdmin, asyncHandler(async (req, res) => {
     const id = validateId(req.params.id);
 
     if (!id) {
@@ -282,10 +299,130 @@ export function createEmployeesRouter(database = pool) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
 
-    res.json({ data: employee });
+    res.json({ data: serializeEmployee(employee) });
   }));
 
-  router.delete('/:id', requireAdmin, asyncHandler(async (req, res) => {
+  router.get('/:id/photo', mutationLimiter, asyncHandler(async (req, res) => {
+    const id = validateId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: 'Employee ID must be a positive integer.' });
+    }
+
+    const employee = await findEmployee(id);
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    const cloudinaryUrl = getEmployeePhotoUrl(employee.photo_path);
+    if (cloudinaryUrl) {
+      res.set('Cache-Control', 'private, max-age=300');
+      return res.redirect(302, cloudinaryUrl);
+    }
+
+    const photoPath = getEmployeePhotoPath(employee.photo_path);
+    if (!photoPath) {
+      return res.status(404).json({ error: 'Employee photo not found.' });
+    }
+
+    try {
+      const photo = await readFile(photoPath);
+      res.set('Cache-Control', 'private, max-age=300');
+      return res.type('image/webp').send(photo);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return res.status(404).json({ error: 'Employee photo not found.' });
+      }
+      throw error;
+    }
+  }));
+
+  router.post('/:id/photo', uploadLimiter, upload.single('photo'), turnstileMiddleware, requireAdmin, asyncHandler(async (req, res) => {
+    const id = validateId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: 'Employee ID must be a positive integer.' });
+    }
+
+    const existingEmployee = await findEmployee(id);
+    if (!existingEmployee) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'Validation failed.',
+        errors: { photo: 'Choose an image to upload.' },
+      });
+    }
+
+    const filename = await saveEmployeePhoto(req.file.buffer);
+    let employee;
+
+    try {
+      employee = await auditedTransaction(
+        database,
+        req.user,
+        (updatedEmployee) => ({
+          action: 'employee.updated',
+          entityType: 'employee',
+          entityId: id,
+          summary: `Updated the photo for ${updatedEmployee.name}.`,
+          details: { changes: [{ field: 'photo_path', label: 'photo' }] },
+          ipAddress: req.ip,
+        }),
+        async (connection) => {
+          await connection.query('UPDATE employees SET photo_path = ? WHERE id = ?', [filename, id]);
+          return findEmployee(id, connection);
+        },
+      );
+    } catch (error) {
+      await deleteEmployeePhoto(filename);
+      throw error;
+    }
+
+    if (existingEmployee.photo_path && existingEmployee.photo_path !== filename) {
+      await deleteEmployeePhoto(existingEmployee.photo_path);
+    }
+
+    res.json({ data: serializeEmployee(employee) });
+  }));
+
+  router.delete('/:id/photo', uploadLimiter, turnstileMiddleware, requireAdmin, asyncHandler(async (req, res) => {
+    const id = validateId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: 'Employee ID must be a positive integer.' });
+    }
+
+    const existingEmployee = await findEmployee(id);
+    if (!existingEmployee) {
+      return res.status(404).json({ error: 'Employee not found.' });
+    }
+
+    if (!existingEmployee.photo_path) {
+      return res.status(204).end();
+    }
+
+    await auditedTransaction(
+      database,
+      req.user,
+      {
+        action: 'employee.updated',
+        entityType: 'employee',
+        entityId: id,
+        summary: `Removed the photo for ${existingEmployee.name}.`,
+        details: { changes: [{ field: 'photo_path', label: 'photo' }] },
+        ipAddress: req.ip,
+      },
+      async (connection) => {
+        await connection.query('UPDATE employees SET photo_path = NULL WHERE id = ?', [id]);
+        return { removed: true };
+      },
+    );
+
+    await deleteEmployeePhoto(existingEmployee.photo_path);
+    res.status(204).end();
+  }));
+
+  router.delete('/:id', mutationLimiter, turnstileMiddleware, requireAdmin, asyncHandler(async (req, res) => {
     const id = validateId(req.params.id);
 
     if (!id) {
@@ -310,15 +447,33 @@ export function createEmployeesRouter(database = pool) {
         ipAddress: req.ip,
       } : null,
       async (connection) => {
-        const [result] = await connection.query('DELETE FROM employees WHERE id = ?', [id]);
+        const [result] = await connection.query(
+          'UPDATE employees SET deleted_at = UTC_TIMESTAMP(6) WHERE id = ? AND deleted_at IS NULL',
+          [id],
+        );
 
         if (result.affectedRows === 0) {
           return null;
         }
 
+        await connection.query("UPDATE users SET status = 'blocked' WHERE employee_id = ?", [id]);
         return { deleted: true };
       },
     );
+
+    if (existingEmployee.photo_path) {
+      try {
+        await deleteEmployeePhoto(existingEmployee.photo_path);
+      } catch (error) {
+        await recordSystemLog(database, {
+          level: 'error',
+          event: 'employee.photo_cleanup_failed',
+          message: error.message,
+          userId: req.user.id,
+          ipAddress: req.ip,
+        });
+      }
+    }
 
     res.status(204).end();
   }));

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { parseAuditLogQuery } from '../validation.js';
+import { toUtcIso } from '../utils/time.js';
 
 const asyncHandler = (handler) => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch(next);
@@ -17,7 +18,7 @@ function serializeAuditLog(row) {
     }
   }
 
-  return { ...row, details };
+  return { ...row, details, created_at: toUtcIso(row.created_at) };
 }
 
 export function createAuditLogsRouter(database = pool) {

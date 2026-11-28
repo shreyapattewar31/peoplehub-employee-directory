@@ -1,5 +1,21 @@
-import { formatDate, formatSalary, getInitials } from '../utils/format.js';
+import { useEffect, useState } from 'react';
+import { formatDate, formatDateTime, formatSalary, getInitials } from '../utils/format.js';
+import { employeePhotoUrl } from '../utils/url.js';
 import Icon from './Icon.jsx';
+
+function EmployeeAvatar({ employee }) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => setImageFailed(false), [employee.photo_url]);
+
+  return (
+    <span className={`avatar avatar-${employee.id % 5}`} aria-hidden="true">
+      {employee.photo_url && !imageFailed
+        ? <img src={employeePhotoUrl(employee)} alt="" onError={() => setImageFailed(true)} />
+        : getInitials(employee.name)}
+    </span>
+  );
+}
 
 function EmployeeActions({ employee, onEdit, onDelete }) {
   return (
@@ -48,9 +64,7 @@ export default function EmployeeTable({ employees, onEdit, onDelete, canManage =
               <tr key={employee.id}>
                 <td>
                   <div className="employee-cell">
-                    <span className={`avatar avatar-${employee.id % 5}`} aria-hidden="true">
-                      {getInitials(employee.name)}
-                    </span>
+                    <EmployeeAvatar employee={employee} />
                     <div>
                       <strong>{employee.name}</strong>
                       <span>Employee #{employee.id}</span>
@@ -69,7 +83,7 @@ export default function EmployeeTable({ employees, onEdit, onDelete, canManage =
                 <td className="date-cell">
                   <strong>{formatDate(employee.joining_date)}</strong>
                 </td>
-                <td className="created-cell">{formatDate(employee.created_at)}</td>
+                <td className="created-cell">{formatDateTime(employee.created_at)}</td>
                 {canManage && (
                   <td>
                     <EmployeeActions employee={employee} onEdit={onEdit} onDelete={onDelete} />
@@ -123,7 +137,7 @@ export default function EmployeeTable({ employees, onEdit, onDelete, canManage =
               </div>
               <div>
                 <dt>Created</dt>
-                <dd>{formatDate(employee.created_at)}</dd>
+                <dd>{formatDateTime(employee.created_at)}</dd>
               </div>
             </dl>
           </article>

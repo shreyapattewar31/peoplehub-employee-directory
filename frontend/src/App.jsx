@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getDepartments, listEmployees } from './api.js';
+import { getAdminSettings, getDepartments, listEmployees } from './api.js';
 import { useAuth } from './AuthContext.jsx';
 import ActivityLog from './components/ActivityLog.jsx';
 import AuthPage from './components/AuthPage.jsx';
 import DeleteEmployeeModal from './components/DeleteEmployeeModal.jsx';
 import EmployeeForm from './components/EmployeeForm.jsx';
+import EmployeePortal from './components/EmployeePortal.jsx';
 import EmployeeTable, { EmployeeTableSkeleton } from './components/EmployeeTable.jsx';
 import Icon from './components/Icon.jsx';
+import OnboardingModal from './components/OnboardingModal.jsx';
+import OnboardingPage from './components/OnboardingPage.jsx';
+import OnboardingReview from './components/OnboardingReview.jsx';
+import AdminWorkforce from './components/AdminWorkforce.jsx';
+import Pagination from './components/Pagination.jsx';
+import SettingsPanel from './components/SettingsPanel.jsx';
+import ToastStack from './components/ToastStack.jsx';
 import { useDebouncedValue } from './hooks/useDebouncedValue.js';
 import { getInitials } from './utils/format.js';
+import { saveDisplayPreferences } from './utils/preferences.js';
 
 const PAGE_SIZE = 10;
 
@@ -26,8 +35,19 @@ export default function App() {
     );
   }
 
+  const pathname = window.location.pathname.replace(/\/+$/, '');
+  const isOnboarding = pathname === '/onboarding' || pathname === '/onboarding/complete';
+
+  if (isOnboarding) {
+    return <OnboardingPage completed={pathname === '/onboarding/complete'} />;
+  }
+
   if (!user) {
-    return <AuthPage />;
+    return <AuthPage initialMode="login" />;
+  }
+
+  if (user.role !== 'admin') {
+    return <EmployeePortal user={user} onLogout={signOut} />;
   }
 
   return <EmployeeDirectory user={user} onLogout={signOut} />;
@@ -49,22 +69,39 @@ function EmployeeDirectory({ user, onLogout }) {
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
   const [isLoading, setIsLoading] = useState(true);
   const [listError, setListError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [formState, setFormState] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [toasts, setToasts] = useState([]);
   const debouncedSearch = useDebouncedValue(searchInput);
+
+  const addToast = useCallback((type, message) => {
+    setToasts((current) => [...current.slice(-2), { id: `${Date.now()}-${Math.random()}`, type, message }]);
+  }, []);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  useEffect(() => {
+    getAdminSettings().then((response) => {
+      saveDisplayPreferences(response.data);
+    }).catch(() => {});
+  }, []);
 
   const refreshDepartments = useCallback(async () => {
     try {
       const response = await getDepartments();
       setDepartments(response.data);
     } catch {
-      setToast({ type: 'error', message: 'The department filter could not be refreshed.' });
+      addToast('error', 'The department filter could not be refreshed.');
     }
-  }, []);
+  }, [addToast]);
 
   useEffect(() => {
     refreshDepartments();
@@ -80,7 +117,7 @@ function EmployeeDirectory({ user, onLogout }) {
       try {
         const response = await listEmployees({
           page,
-          limit: PAGE_SIZE,
+          limit: pageSize,
           search: debouncedSearch,
           department,
           sortBy,
@@ -106,19 +143,50 @@ function EmployeeDirectory({ user, onLogout }) {
 
     loadEmployees();
     return () => controller.abort();
-  }, [page, debouncedSearch, department, sortBy, sortOrder, reloadKey]);
+  }, [page, pageSize, debouncedSearch, department, sortBy, sortOrder, reloadKey]);
 
   useEffect(() => {
-    if (!toast) {
+    if (activeView !== 'employees') {
       return undefined;
     }
 
-    const timeout = window.setTimeout(() => setToast(null), 4500);
-    return () => window.clearTimeout(timeout);
-  }, [toast]);
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        setReloadKey((value) => value + 1);
+      }
+    };
+    const interval = window.setInterval(refresh, 30000);
+    window.addEventListener('focus', refresh);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [activeView]);
+
+  useEffect(() => {
+    if (!isMobileNavOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsMobileNavOpen(false);
+      }
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMobileNavOpen]);
 
   const closeForm = useCallback(() => setFormState(null), []);
   const closeDeleteModal = useCallback(() => setDeleteTarget(null), []);
+  const closeOnboardingModal = useCallback(() => setIsOnboardingOpen(false), []);
 
   const openCreateForm = () => setFormState({ mode: 'create', employee: null });
   const openEditForm = (employee) => setFormState({ mode: 'edit', employee });
@@ -135,12 +203,9 @@ function EmployeeDirectory({ user, onLogout }) {
     }
 
     setReloadKey((value) => value + 1);
-    setToast({
-      type: 'success',
-      message: mode === 'create'
-        ? `${employee.name} was added to the directory.`
-        : `${employee.name}'s details were updated.`,
-    });
+    addToast('success', mode === 'create'
+      ? `${employee.name} was added to the directory.`
+      : `${employee.name}'s details were updated.`);
   };
 
   const handleDeleted = (employee) => {
@@ -152,7 +217,8 @@ function EmployeeDirectory({ user, onLogout }) {
       setReloadKey((value) => value + 1);
     }
 
-    setToast({ type: 'success', message: `${employee.name} was removed from the directory.` });
+    addToast('success', `${employee.name} was removed from the directory.`);
+    refreshDepartments();
   };
 
   const clearFilters = () => {
@@ -163,14 +229,22 @@ function EmployeeDirectory({ user, onLogout }) {
     setPage(1);
   };
 
-  const startResult = pagination.total === 0 ? 0 : (pagination.page - 1) * PAGE_SIZE + 1;
-  const endResult = Math.min((pagination.page - 1) * PAGE_SIZE + employees.length, pagination.total);
+  const changeView = (view) => {
+    setActiveView(view);
+    setIsMobileNavOpen(false);
+  };
+
+  const startResult = pagination.total === 0 ? 0 : (pagination.page - 1) * pageSize + 1;
+  const endResult = Math.min((pagination.page - 1) * pageSize + employees.length, pagination.total);
   const hasFilters = Boolean(searchInput || department);
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${isMobileNavOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-top">
+          <button type="button" className="mobile-nav-close" onClick={() => setIsMobileNavOpen(false)} aria-label="Close navigation">
+            <Icon name="x" size={20} />
+          </button>
           <a className="brand" href="/" aria-label="PeopleHub employee directory home">
             <span className="brand-mark"><Icon name="users" size={21} /></span>
             <span>PeopleHub</span>
@@ -181,7 +255,7 @@ function EmployeeDirectory({ user, onLogout }) {
             <button
               type="button"
               className={`nav-item ${activeView === 'employees' ? 'nav-item-active' : ''}`}
-              onClick={() => setActiveView('employees')}
+              onClick={() => changeView('employees')}
               aria-current={activeView === 'employees' ? 'page' : undefined}
             >
               <span className="nav-item-label">
@@ -194,7 +268,7 @@ function EmployeeDirectory({ user, onLogout }) {
               <button
                 type="button"
                 className={`nav-item ${activeView === 'activity' ? 'nav-item-active' : ''}`}
-                onClick={() => setActiveView('activity')}
+                onClick={() => changeView('activity')}
                 aria-current={activeView === 'activity' ? 'page' : undefined}
               >
                 <span className="nav-item-label">
@@ -203,6 +277,56 @@ function EmployeeDirectory({ user, onLogout }) {
                 </span>
               </button>
             )}
+            {isAdmin && (
+              <button
+                type="button"
+                className={`nav-item ${activeView === 'onboarding' ? 'nav-item-active' : ''}`}
+                onClick={() => changeView('onboarding')}
+                aria-current={activeView === 'onboarding' ? 'page' : undefined}
+              >
+                <span className="nav-item-label">
+                  <Icon name="shield" size={19} />
+                  Onboarding review
+                </span>
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                type="button"
+                className={`nav-item ${activeView === 'attendance' ? 'nav-item-active' : ''}`}
+                onClick={() => changeView('attendance')}
+                aria-current={activeView === 'attendance' ? 'page' : undefined}
+              >
+                <span className="nav-item-label">
+                  <Icon name="clock" size={19} />
+                  Attendance
+                </span>
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                type="button"
+                className={`nav-item ${activeView === 'leave' ? 'nav-item-active' : ''}`}
+                onClick={() => changeView('leave')}
+                aria-current={activeView === 'leave' ? 'page' : undefined}
+              >
+                <span className="nav-item-label">
+                  <Icon name="calendar" size={19} />
+                  Leave requests
+                </span>
+              </button>
+            )}
+            <button
+              type="button"
+              className={`nav-item ${activeView === 'settings' ? 'nav-item-active' : ''}`}
+              onClick={() => changeView('settings')}
+              aria-current={activeView === 'settings' ? 'page' : undefined}
+            >
+              <span className="nav-item-label">
+                <Icon name="settings" size={19} />
+                Settings
+              </span>
+            </button>
           </nav>
         </div>
         <div className="sidebar-footer">
@@ -226,6 +350,9 @@ function EmployeeDirectory({ user, onLogout }) {
       <div className="workspace">
         <header className="topbar">
           <div className="topbar-inner">
+            <button type="button" className="mobile-menu-button" onClick={() => setIsMobileNavOpen(true)} aria-label="Open navigation" aria-expanded={isMobileNavOpen}>
+              <Icon name="menu" size={21} />
+            </button>
             <a className="mobile-brand" href="/" aria-label="PeopleHub home">
               <span className="brand-mark"><Icon name="users" size={19} /></span>
               <span>PeopleHub</span>
@@ -234,7 +361,14 @@ function EmployeeDirectory({ user, onLogout }) {
               <Icon name="building" size={17} />
               <span>PeopleHub</span>
               <Icon name="chevronRight" size={14} />
-              <strong>{activeView === 'activity' ? 'Activity Log' : 'Employee Directory'}</strong>
+              <strong>{{
+                settings: 'Admin Settings',
+                activity: 'Activity Log',
+                onboarding: 'Onboarding Review',
+                attendance: 'Attendance',
+                leave: 'Leave Requests',
+                employees: 'Employee Directory',
+              }[activeView]}</strong>
             </div>
             <div className="topbar-actions">
               {isAdmin && (
@@ -269,7 +403,7 @@ function EmployeeDirectory({ user, onLogout }) {
         </header>
 
         <main className="main-content">
-          {activeView === 'activity' ? (
+          {activeView === 'settings' ? null : activeView === 'activity' ? (
             <section className="page-header">
               <div className="page-heading">
                 <p className="eyebrow">Administration</p>
@@ -277,6 +411,24 @@ function EmployeeDirectory({ user, onLogout }) {
                 <p className="page-description">
                   Review account access and employee changes across your workspace.
                 </p>
+              </div>
+              <span className="role-badge"><Icon name="shield" size={15} />Admin only</span>
+            </section>
+          ) : activeView === 'onboarding' ? (
+            <section className="page-header">
+              <div className="page-heading">
+                <p className="eyebrow">People operations</p>
+                <h1>Onboarding Review</h1>
+                <p className="page-description">Verify employee documents and approve account access.</p>
+              </div>
+              <span className="role-badge"><Icon name="shield" size={15} />Admin only</span>
+            </section>
+          ) : activeView === 'attendance' || activeView === 'leave' ? (
+            <section className="page-header">
+              <div className="page-heading">
+                <p className="eyebrow">People operations</p>
+                <h1>{activeView === 'attendance' ? 'Attendance' : 'Leave Requests'}</h1>
+                <p className="page-description">{activeView === 'attendance' ? 'Review employee punch-in and punch-out records.' : 'Approve or reject employee leave applications.'}</p>
               </div>
               <span className="role-badge"><Icon name="shield" size={15} />Admin only</span>
             </section>
@@ -292,10 +444,20 @@ function EmployeeDirectory({ user, onLogout }) {
                 </p>
               </div>
               {isAdmin && (
-                <button type="button" className="button button-primary button-add" onClick={openCreateForm}>
-                  <Icon name="plus" size={19} />
-                  Add employee
-                </button>
+                <div className="page-header-actions">
+                  <button
+                    type="button"
+                    className="button button-secondary button-add"
+                    onClick={() => setIsOnboardingOpen(true)}
+                  >
+                    <Icon name="form" size={18} />
+                    Import Google Form
+                  </button>
+                  <button type="button" className="button button-primary button-add" onClick={openCreateForm}>
+                    <Icon name="plus" size={19} />
+                    Add employee
+                  </button>
+                </div>
               )}
             </section>
           )}
@@ -475,36 +637,24 @@ function EmployeeDirectory({ user, onLogout }) {
 
             <footer className="directory-footer">
               <p>{hasFilters ? 'Filters are applied to these results.' : isAdmin ? 'All employee records' : 'Read-only employee directory'}</p>
-              {pagination.totalPages > 1 && (
-                <nav className="pagination" aria-label="Employee pages">
-                  <button
-                    type="button"
-                    className="button button-secondary button-small"
-                    onClick={() => setPage((value) => value - 1)}
-                    disabled={page === 1 || isLoading}
-                  >
-                    <Icon name="chevronLeft" size={16} />
-                    Previous
-                  </button>
-                  <span className="page-number">{pagination.page}</span>
-                  <span className="page-total">of {pagination.totalPages}</span>
-                  <button
-                    type="button"
-                    className="button button-secondary button-small"
-                    onClick={() => setPage((value) => value + 1)}
-                    disabled={page >= pagination.totalPages || isLoading}
-                  >
-                    Next
-                    <Icon name="chevronRight" size={16} />
-                  </button>
-                </nav>
-              )}
+              <Pagination
+                pagination={pagination}
+                page={page}
+                limit={pageSize}
+                onPageChange={setPage}
+                onLimitChange={(size) => { setPageSize(size); setPage(1); }}
+                disabled={isLoading}
+                label="Employee pages"
+              />
             </footer>
           </section>
             </>
           )}
 
           {activeView === 'activity' && <ActivityLog />}
+          {activeView === 'onboarding' && <OnboardingReview />}
+          {(activeView === 'attendance' || activeView === 'leave') && <AdminWorkforce initialTab={activeView} />}
+          {activeView === 'settings' && <SettingsPanel onNotify={addToast} />}
 
           <p className="app-footnote">PeopleHub <span>·</span> Employee Directory</p>
         </main>
@@ -517,6 +667,7 @@ function EmployeeDirectory({ user, onLogout }) {
           departments={departments}
           onClose={closeForm}
           onSaved={handleSaved}
+          onNotify={addToast}
         />
       )}
 
@@ -528,17 +679,12 @@ function EmployeeDirectory({ user, onLogout }) {
         />
       )}
 
-      {toast && (
-        <div className={`toast toast-${toast.type}`} role={toast.type === 'error' ? 'alert' : 'status'}>
-          <span className="toast-icon">
-            <Icon name={toast.type === 'error' ? 'alert' : 'check'} size={18} />
-          </span>
-          <span>{toast.message}</span>
-          <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification">
-            <Icon name="x" size={16} />
-          </button>
-        </div>
+      {isAdmin && isOnboardingOpen && (
+        <OnboardingModal onClose={closeOnboardingModal} />
       )}
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      {isMobileNavOpen && <button type="button" className="mobile-nav-backdrop" onClick={() => setIsMobileNavOpen(false)} aria-label="Close navigation" />}
     </div>
   );
 }

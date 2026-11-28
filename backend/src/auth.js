@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { config } from './config.js';
+import { toUtcIso } from './utils/time.js';
 
 export const SESSION_COOKIE_NAME = 'peoplehub_session';
 export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -18,7 +19,10 @@ export function serializeUser(user) {
     name: user.name,
     email: user.email,
     role: user.role || 'user',
-    created_at: user.created_at,
+    status: user.status || 'active',
+    employeeId: user.employee_id ?? null,
+    created_at: toUtcIso(user.created_at),
+    updated_at: toUtcIso(user.updated_at),
   };
 }
 
@@ -62,9 +66,11 @@ export async function getSessionUser(database, token) {
   }
 
   const [rows] = await database.query(
-    `SELECT u.id, u.name, u.email, u.role, u.created_at, s.expires_at
+    `SELECT u.id, u.name, u.email, u.role, u.status, u.employee_id, u.created_at, u.updated_at,
+            e.onboarding_status, e.deleted_at, s.expires_at
      FROM sessions s
      INNER JOIN users u ON u.id = s.user_id
+     LEFT JOIN employees e ON e.id = u.employee_id
      WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
      LIMIT 1`,
     [hashToken(token)],

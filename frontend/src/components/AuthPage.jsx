@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api.js';
 import { useAuth } from '../AuthContext.jsx';
+import { clearDraft, readDraft, writeDraft } from '../utils/drafts.js';
+import TurnstileField from './TurnstileField.jsx';
 import Icon from './Icon.jsx';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -12,15 +14,24 @@ const EMPTY_VALUES = {
   confirmPassword: '',
 };
 
-export default function AuthPage() {
+export default function AuthPage({ initialMode = 'login', onboarding = false, completed = false }) {
   const { signIn, register, sessionError, refreshSession } = useAuth();
-  const [mode, setMode] = useState('login');
-  const [values, setValues] = useState(EMPTY_VALUES);
+  const [mode, setMode] = useState(initialMode);
+  const draftKey = `auth.${onboarding ? 'onboarding' : 'standard'}`;
+  const [values, setValues] = useState(() => readDraft(draftKey, EMPTY_VALUES));
   const [errors, setErrors] = useState({});
   const [submitError, setSubmitError] = useState('');
+  const turnstileRef = useRef(null);
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isComplete, setIsComplete] = useState(false);
   const isRegistering = mode === 'register';
+  const isOnboardingRegister = onboarding && isRegistering;
+  const showCompletion = onboarding && (isComplete || completed);
+
+  useEffect(() => {
+    writeDraft(draftKey, values, ['password', 'confirmPassword']);
+  }, [draftKey, values]);
 
   const switchMode = (nextMode) => {
     setMode(nextMode);
@@ -77,20 +88,31 @@ export default function AuthPage() {
 
     setIsSubmitting(true);
     setSubmitError('');
+    setErrors((current) => ({ ...current, captcha: '' }));
 
     try {
+      const turnstile = turnstileRef.current?.getValue() || {};
       if (isRegistering) {
         await register({
           name: values.name.trim(),
           email: values.email.trim(),
           password: values.password,
+          registrationSource: onboarding ? 'onboarding' : 'standard',
+          ...turnstile,
         });
       } else {
-        await signIn({ email: values.email.trim(), password: values.password });
+        await signIn({ email: values.email.trim(), password: values.password, ...turnstile });
+      }
+
+      clearDraft(draftKey);
+      if (onboarding) {
+        window.history.replaceState({}, '', '/onboarding/complete');
+        setIsComplete(true);
       }
     } catch (error) {
       if (error instanceof ApiError) {
         setErrors(error.errors);
+        turnstileRef.current?.refresh();
       }
       setSubmitError(error.message || 'The account could not be accessed.');
     } finally {
@@ -150,15 +172,21 @@ export default function AuthPage() {
         </div>
 
         <div className="auth-card">
-          <p className="auth-eyebrow">{isRegistering ? 'Join the workspace' : 'Welcome back'}</p>
-          <h2>{isRegistering ? 'Create your account' : 'Sign in to PeopleHub'}</h2>
-          <p className="auth-intro">
-            {isRegistering
-              ? 'Register once to access the employee directory.'
-              : 'Enter your account details to continue to the directory.'}
-          </p>
+          {!showCompletion && (
+            <>
+              <p className="auth-eyebrow">{isOnboardingRegister ? 'Employee onboarding' : isRegistering ? 'Join the workspace' : 'Welcome back'}</p>
+              <h2>{isOnboardingRegister ? 'Join PeopleHub' : isRegistering ? 'Create your account' : 'Sign in to PeopleHub'}</h2>
+              <p className="auth-intro">
+                {isOnboardingRegister
+                  ? 'Create your member account for PeopleHub onboarding.'
+                  : isRegistering
+                    ? 'Create your account to sign in to PeopleHub.'
+                    : 'Enter your account details to continue to PeopleHub.'}
+              </p>
+            </>
+          )}
 
-          {sessionError && (
+          {!showCompletion && sessionError && (
             <div className="alert alert-error auth-session-error" role="alert">
               <Icon name="alert" size={18} />
               <div>
@@ -168,30 +196,46 @@ export default function AuthPage() {
             </div>
           )}
 
-          <div className="auth-tabs" role="group" aria-label="Account access">
-            <button
-              type="button"
-              className={!isRegistering ? 'auth-tab-active' : ''}
-              aria-pressed={!isRegistering}
-              onClick={() => switchMode('login')}
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              className={isRegistering ? 'auth-tab-active' : ''}
-              aria-pressed={isRegistering}
-              onClick={() => switchMode('register')}
-            >
-              Create account
-            </button>
-          </div>
+          {showCompletion ? (
+            <div className="onboarding-success" role="status">
+              <span className="onboarding-success-icon"><Icon name="check" size={28} /></span>
+              <p className="auth-eyebrow">Employee onboarding</p>
+              <h2>Your account is ready</h2>
+              <p className="auth-intro">
+                Your member account has been created. Use the main sign-in page to continue to PeopleHub.
+              </p>
+              <a className="button button-primary onboarding-signin-link" href="/">
+                Go to sign in
+              </a>
+            </div>
+          ) : (
+            <>
+              {!onboarding && (
+                <div className="auth-tabs" role="group" aria-label="Account access">
+                  <button
+                    type="button"
+                    className={!isRegistering ? 'auth-tab-active' : ''}
+                    aria-pressed={!isRegistering}
+                    onClick={() => switchMode('login')}
+                  >
+                    Sign in
+                  </button>
+                  <button
+                    type="button"
+                    className={isRegistering ? 'auth-tab-active' : ''}
+                    aria-pressed={isRegistering}
+                    onClick={() => switchMode('register')}
+                  >
+                    Create account
+                  </button>
+                </div>
+              )}
 
           <form className="auth-form" onSubmit={handleSubmit} noValidate>
-            {submitError && (
+            {(submitError || errors.form) && (
               <div className="alert alert-error auth-submit-error" role="alert">
                 <Icon name="alert" size={18} />
-                <span>{submitError}</span>
+                <span>{submitError || errors.form}</span>
               </div>
             )}
 
@@ -274,6 +318,13 @@ export default function AuthPage() {
               </div>
             )}
 
+            <TurnstileField
+              ref={turnstileRef}
+              error={errors.captcha}
+              disabled={isSubmitting}
+              onErrorClear={() => setErrors((current) => ({ ...current, captcha: '' }))}
+            />
+
             <button type="submit" className="button button-primary auth-submit" disabled={isSubmitting}>
               {isSubmitting
                 ? <span className="spinner" aria-hidden="true" />
@@ -284,12 +335,16 @@ export default function AuthPage() {
             </button>
           </form>
 
-          <p className="auth-switch">
-            {isRegistering ? 'Already have an account?' : 'New to PeopleHub?'}{' '}
-            <button type="button" onClick={() => switchMode(isRegistering ? 'login' : 'register')}>
-              {isRegistering ? 'Sign in' : 'Create an account'}
-            </button>
-          </p>
+              {!onboarding && (
+                <p className="auth-switch">
+                  {isRegistering ? 'Already have an account?' : 'New to PeopleHub?'}{' '}
+                  <button type="button" onClick={() => switchMode(isRegistering ? 'login' : 'register')}>
+                    {isRegistering ? 'Sign in' : 'Create an account'}
+                  </button>
+                </p>
+              )}
+            </>
+          )}
         </div>
       </main>
     </div>

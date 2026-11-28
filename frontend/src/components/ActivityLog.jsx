@@ -3,6 +3,7 @@ import { listAuditLogs } from '../api.js';
 import { useDebouncedValue } from '../hooks/useDebouncedValue.js';
 import { formatDateTime, getInitials } from '../utils/format.js';
 import Icon from './Icon.jsx';
+import Pagination from './Pagination.jsx';
 
 const PAGE_SIZE = 10;
 
@@ -29,6 +30,7 @@ export default function ActivityLog() {
   const [logs, setLogs] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: PAGE_SIZE, total: 0, totalPages: 0 });
   const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(PAGE_SIZE);
   const [action, setAction] = useState('');
   const [entityType, setEntityType] = useState('');
   const [searchInput, setSearchInput] = useState('');
@@ -47,7 +49,7 @@ export default function ActivityLog() {
       try {
         const response = await listAuditLogs({
           page,
-          limit: PAGE_SIZE,
+          limit,
           action,
           entityType,
           search: debouncedSearch,
@@ -72,10 +74,18 @@ export default function ActivityLog() {
 
     loadLogs();
     return () => controller.abort();
-  }, [page, action, entityType, debouncedSearch, reloadKey]);
+  }, [page, limit, action, entityType, debouncedSearch, reloadKey]);
 
-  const startResult = pagination.total === 0 ? 0 : (pagination.page - 1) * PAGE_SIZE + 1;
-  const endResult = Math.min((pagination.page - 1) * PAGE_SIZE + logs.length, pagination.total);
+  const startResult = pagination.total === 0 ? 0 : (pagination.page - 1) * limit + 1;
+  const endResult = Math.min((pagination.page - 1) * limit + logs.length, pagination.total);
+  const hasFilters = Boolean(searchInput || action || entityType);
+
+  const clearFilters = () => {
+    setSearchInput('');
+    setAction('');
+    setEntityType('');
+    setPage(1);
+  };
 
   return (
     <section className="directory-card activity-card" id="activity" aria-labelledby="activity-title">
@@ -148,6 +158,12 @@ export default function ActivityLog() {
             </select>
             <Icon name="arrowDown" size={14} className="select-chevron" />
           </div>
+          {hasFilters && (
+            <button type="button" className="button button-secondary button-small reset-button" onClick={clearFilters}>
+              <Icon name="x" size={15} />
+              Reset
+            </button>
+          )}
           <button
             type="button"
             className="button button-secondary button-small"
@@ -196,11 +212,17 @@ export default function ActivityLog() {
         <div className="empty-state">
           <span className="empty-icon"><Icon name="activity" size={30} /></span>
           <h3>No activity found</h3>
-          <p>Account and employee changes will appear here as they happen.</p>
+          <p>{hasFilters ? 'Try a different search or clear the activity filters.' : 'Account and employee changes will appear here as they happen.'}</p>
+          {hasFilters && (
+            <button type="button" className="button button-secondary" onClick={clearFilters}>
+              <Icon name="x" size={17} />
+              Clear filters
+            </button>
+          )}
         </div>
       ) : (
         <div className={isLoading ? 'table-is-loading' : ''}>
-          <div className="table-scroll activity-table-scroll">
+          <div className="table-scroll activity-table-scroll activity-desktop">
             <table className="activity-table">
               <thead>
                 <tr>
@@ -246,35 +268,40 @@ export default function ActivityLog() {
               </tbody>
             </table>
           </div>
+          <div className="activity-mobile-list">
+            {logs.map((log) => {
+              const meta = ACTION_META[log.action] || { label: log.action, tone: 'neutral' };
+              return (
+                <article className="activity-mobile-card" key={log.id}>
+                  <div className="activity-mobile-top">
+                    <span className={`activity-badge activity-badge-${meta.tone}`}>
+                      <Icon name="activity" size={14} />{meta.label}
+                    </span>
+                    <time dateTime={log.created_at}>{formatDateTime(log.created_at)}</time>
+                  </div>
+                  <strong>{log.summary}</strong>
+                  <div className="activity-mobile-actor">
+                    <span className="avatar avatar-0" aria-hidden="true">{getInitials(log.user_name)}</span>
+                    <div><span>{log.user_name}</span><small>{log.user_email}</small></div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
         </div>
       )}
 
       <footer className="directory-footer">
         <p>Audit records are stored permanently and sorted newest first.</p>
-        {pagination.totalPages > 1 && (
-          <nav className="pagination" aria-label="Activity pages">
-            <button
-              type="button"
-              className="button button-secondary button-small"
-              onClick={() => setPage((value) => value - 1)}
-              disabled={page === 1 || isLoading}
-            >
-              <Icon name="chevronLeft" size={16} />
-              Previous
-            </button>
-            <span className="page-number">{pagination.page}</span>
-            <span className="page-total">of {pagination.totalPages}</span>
-            <button
-              type="button"
-              className="button button-secondary button-small"
-              onClick={() => setPage((value) => value + 1)}
-              disabled={page >= pagination.totalPages || isLoading}
-            >
-              Next
-              <Icon name="chevronRight" size={16} />
-            </button>
-          </nav>
-        )}
+        <Pagination
+          pagination={pagination}
+          page={page}
+          limit={limit}
+          onPageChange={setPage}
+          onLimitChange={(size) => { setLimit(size); setPage(1); }}
+          disabled={isLoading}
+          label="Activity pages"
+        />
       </footer>
     </section>
   );
