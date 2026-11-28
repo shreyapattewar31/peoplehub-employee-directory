@@ -204,7 +204,7 @@ export default function AuthPage({ initialMode = 'login', onboarding = false, co
               <p className="auth-intro">
                 Your member account has been created. Use the main sign-in page to continue to PeopleHub.
               </p>
-              <a className="button button-primary onboarding-signin-link" href="/">
+              <a className="button button-primary onboarding-signin-link" href="/login">
                 Go to sign in
               </a>
             </div>

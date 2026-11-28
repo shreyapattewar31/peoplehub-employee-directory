@@ -229,7 +229,7 @@ export default function OnboardingPage({ completed = false }) {
             <p className="auth-eyebrow">Submitted successfully</p>
             <h2>Waiting for administrator approval</h2>
             <p className="auth-intro">Sign-in stays blocked until your Aadhaar, PAN, and bank documents are verified and your onboarding is approved.</p>
-            <a className="button button-primary onboarding-signin-link" href="/">Go to sign in</a>
+            <a className="button button-primary onboarding-signin-link" href="/login">Go to sign in</a>
           </div>
         </main>
       </div>

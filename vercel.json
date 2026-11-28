@@ -4,6 +4,7 @@
   "outputDirectory": "frontend/dist",
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/index" },
+    { "source": "/login", "destination": "/index.html" },
     { "source": "/onboarding", "destination": "/index.html" },
     { "source": "/onboarding/:path*", "destination": "/index.html" }
   ]

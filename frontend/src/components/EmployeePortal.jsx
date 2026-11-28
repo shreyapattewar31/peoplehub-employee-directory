@@ -151,7 +151,7 @@ export default function EmployeePortal({ user, onLogout }) {
   return (
     <div className="member-page">
       <header className="member-topbar">
-        <a className="member-brand" href="/" aria-label="PeopleHub home"><span className="brand-mark"><Icon name="users" size={21} /></span><span>PeopleHub</span><span className="portal-badge">Portal</span></a>
+        <a className="member-brand" href="/login" aria-label="PeopleHub home"><span className="brand-mark"><Icon name="users" size={21} /></span><span>PeopleHub</span><span className="portal-badge">Portal</span></a>
         <button type="button" className="button button-secondary button-small" onClick={onLogout}><Icon name="logout" size={16} />Sign out</button>
       </header>
 

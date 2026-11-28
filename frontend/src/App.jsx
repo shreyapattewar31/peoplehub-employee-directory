@@ -36,7 +36,7 @@ export default function App() {
   }
 
   const pathname = window.location.pathname.replace(/\/+$/, '');
-  const isOnboarding = pathname === '/onboarding' || pathname === '/onboarding/complete';
+  const isOnboarding = pathname === '' || pathname === '/onboarding' || pathname === '/onboarding/complete';
 
   if (isOnboarding) {
     return <OnboardingPage completed={pathname === '/onboarding/complete'} />;
@@ -245,7 +245,7 @@ function EmployeeDirectory({ user, onLogout }) {
           <button type="button" className="mobile-nav-close" onClick={() => setIsMobileNavOpen(false)} aria-label="Close navigation">
             <Icon name="x" size={20} />
           </button>
-          <a className="brand" href="/" aria-label="PeopleHub employee directory home">
+          <a className="brand" href="/login" aria-label="PeopleHub employee directory home">
             <span className="brand-mark"><Icon name="users" size={21} /></span>
             <span>PeopleHub</span>
             <span className="portal-badge">Portal</span>
@@ -353,7 +353,7 @@ function EmployeeDirectory({ user, onLogout }) {
             <button type="button" className="mobile-menu-button" onClick={() => setIsMobileNavOpen(true)} aria-label="Open navigation" aria-expanded={isMobileNavOpen}>
               <Icon name="menu" size={21} />
             </button>
-            <a className="mobile-brand" href="/" aria-label="PeopleHub home">
+            <a className="mobile-brand" href="/login" aria-label="PeopleHub home">
               <span className="brand-mark"><Icon name="users" size={19} /></span>
               <span>PeopleHub</span>
             </a>
