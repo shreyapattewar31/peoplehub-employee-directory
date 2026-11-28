@@ -92,12 +92,6 @@ export function validateConfig() {
     throw new Error('APP_TIMEZONE must be a valid IANA time zone, such as UTC or Asia/Kolkata.');
   }
 
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: process.env.TZ }).format();
-  } catch {
-    throw new Error('TZ must be a valid IANA time zone, such as UTC or Asia/Kolkata.');
-  }
-
   config.clientOrigin = normalizeBaseUrl(config.clientOrigin, 'CLIENT_ORIGIN');
   config.publicAppUrl = normalizeBaseUrl(config.publicAppUrl, 'PUBLIC_APP_URL');
 
